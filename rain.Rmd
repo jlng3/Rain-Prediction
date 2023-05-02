@@ -140,7 +140,9 @@ colnames(freq_table) <- c("Unique Values", "Frequency", "Proportion")
 freq_table
 ```
 
-From the table above, we can see that our dependent variable "RainTomorrow" is a **categorical variable** with two unique values "Yes" and "No". Based on our sampled data, there is **79%** of the time that it **will not rain tomorrow** and **21%** of the time that it **will rain tomorrow**.
+From the table above, we can see that our dependent variable "RainTomorrow" is a **categorical variable** with two unique values "Yes" and "No". Based on our sampled data, there is **79%** of the time that it **will not rain tomorrow** and **21%** of the time that it **will rain tomorrow**. This indicates that the data is imbalanced.
+
+Common approach to deal with imbalance data is to undersample the majority class and oversample the minority class. However, this approach is not implemented as the current imbalanced dataset better reflects the reality, where it is common to have more non-rainy days than rainy days.
 
 ## Exploring Independent Variables
 In this section, the analysis is conducted by segregating the dataset into categorical and numerical variables. Different analysis will be conducted for different types of variables.
@@ -242,7 +244,7 @@ plot_grid(Day, Month, Year, Location, MinTemp, MaxTemp, Rainfall, WindGustSpeed,
 
 ```
 
-From the boxplots above, "Rainfall", "WindGustSpeed", "WindSpeed9am" and "Humidity9am" **have outliers** in their data. The remaining variables are proven to have no outliers. Before proceeding with model training, these outliers should be treated.
+From the boxplots above, "Rainfall", "WindGustSpeed", "WindSpeed9am", "WindSpeed3pm" and "Humidity9am" **have outliers** in their data. The remaining variables are proven to have no outliers. Before proceeding with model training, these outliers should be treated.
 
 In the case of predicting whether tomorrow will rain, such extreme values may be logical as it may be due to extreme whether or the location. Also, since we are random sampling 2000 observations from the original dataset, it is possible to sample data from, for instance, a location with very high temperature or humidity for a particular month, which is logical in the original dataset but is seemed as outlier in our sample dataset. Therefore, these outliers are **not omitted**. 
 
@@ -332,25 +334,30 @@ WAUS.test = WAUS[-train.row, ]
 ## Classification Model
 Classification models are then implemented on the segregated data. After implementing the models, a confusion matrix is constructed and a few important indicators are determined:
 
-**1. Accuracy**
+1. **Accuracy**
 Accuracy is the ratio of correctly predicted observation to the total observation. A higher accuracy suggests lower training error rate.
-**2. Precision**
+
+2. **Precision**
 Precision is the ratio of correctly predicted positive observations to the total predicted positive observations. A higher precision indicates that the model has a lower false positive rate.  
-**3. Recall**
+
+3. **Recall**
 Recall is the ratio of correctly predicted positive observations to all the observations in the actual class. 
-**4. F1**
+4. **F1**
 F1 score is the weighted average of Precision and Recall. Therefore, this score takes both false positives and false negatives into account.
 
 In general, a higher value for these indicators are preferable.
 
 Not only that, from the confusion matrix, we would also like to determine:
-**1. True Positive Rate**
+1. **True Positive Rate**
 True positive is the outcome where the model correctly predicts the positive class.A higher true positive rate is always preferable.
-**2. True Negative Rate**
+
+2. **True Negative Rate**
 True negative is the outcome where the model correctly predicts the negative class.A higher true negative rate is always preferable.
-**3. Type I Error / False Positive Rate**
+
+3. **Type I Error / False Positive Rate**
 Type I Error occurs when the model incorrectly rejects the true null hypothesis. In this case, it means that the model predict that it will not rain tomorrow but in reality it does. A lower Type I Error is always preferable.
-**4. Type II Error / False Negative Rate**
+
+4. **Type II Error / False Negative Rate**
 Type II Error occurs when the model fail to reject the false null hypothesis. In this case, it means that the model predict that it will rain tomorrow but in reality it doesn't. A lower Type II Error is always preferable.
 
 In this project, **5** classification models will be applied. For all classification models, **it will not rain tomorrow** will be viewed as the **positive class**, while **it will rain tomorrow** the **negative class**. 
@@ -686,7 +693,7 @@ summary.table[6, ] <- summary.table[6, ] %>% cell_spec(bold = row == min.t2)
 summary.table %>% kable(booktabs = TRUE, escape = FALSE) %>% kable_styling("responsive")
 ```
 
-Based on the table above, we can see that all classifiers performed similarly, as the lowest values in categories that desire higher value have minor difference compared to the highest values, simiarly for the categories that desire lower value. Therefore, we can say that **there is no single best classifier that outperforms the other**.
+Based on the table above, we can see that all classifiers performed similarly, as the lowest values in categories that desire higher value have minor difference compared to the highest values, similarly for the categories that desire lower value. Therefore, we can say that **there is no single best classifier that outperforms the other**.
 
 ## Variable Performance Evaluation
 
@@ -981,7 +988,15 @@ summary.table2[6, ] <- summary.table2[6, ] %>% cell_spec(bold = row == min.t2)
 
 summary.table2 %>% kable(booktabs = TRUE, escape = FALSE) %>% kable_styling("responsive")
 ```
-Based on the table above, the results are mixed, but cross-validated random forest is chosen as a better model due to **higher F1 score, True Positive rate and AUC**. The reason that ANN doesn't perform as expected, probably due to the amount of data used to train the model is not large enough.
+Based on the table above, the results are mixed, but cross-validated random forest is chosen as a better model among the two. This decision is made on the reason that, in general, optimizing for recall, F1-Score and AUC is more important than precision and accuracy for imbalanced dataset. 
+
+In an imbalanced dataset, where one class is much more prevalent than the other, simply predicting the majority class can lead to a high accuracy rate but it does not necessarily mean the model is performing well. This is because the model is not adequately identifying the minority class, which may be the class of interest.
+
+In this case, optimizing precision may not be as important as it could lead to many false negatives, which means missing actual positive cases. However, optimizing recall and F1 score can help in identifying more true positives and minimize false negatives, which is especially important in cases where the cost of a false negative is high.
+
+Similarly, AUC takes into account the performance of the model across a range of different threshold values, making it a useful metric for imbalanced datasets. AUC measures the ability of the model to correctly rank true positives and true negatives against false positives and false negatives, making it a good metric to evaluate the overall performance of the model on the imbalanced dataset. In this case, the model that dominates in terms of recall, F1-Score and AUC, which is the **cross-validated random forest**, is chosen as the current best model.
+
+Although ANN is expected to dominate cross-validate random forest in terms of performance, the outcome seems to tell the opposite. This might probably due to the amount of data used to train the model is not large enough.
 
 ## Imbalance Data
 Another possible consideration is the class imbalance of the training dataset. 
@@ -1011,6 +1026,7 @@ WAUS.predwrfgrid <- predict(weight.cvrf.grid, WAUS.test) #Prediction
 CM.wrf <- confusionMatrix(mode = "prec_recall", data = WAUS.predwrfgrid, reference = WAUS.test$RainTomorrow) #Confusion Matrix
 print(CM.cvrf)
 ```
+All metrices seems indifferent compared to the non-cross-validated model.
 ```{r}
 #Calculating Type I Error
 T1.wrf <- CM.wrf$table[3] / (CM.wrf$table[3] + CM.wrf$table[4])
@@ -1096,10 +1112,66 @@ summary.table3 %>% kable(booktabs = TRUE, escape = FALSE) %>% kable_styling("res
 The model with class weight consideration performs worse than the model without class weight consideration, possibly indicate that the random forest model already account for class imbalance very well. Random forests have an inherent ability to handle class imbalance, and sometimes adding class weights can even reduce the performance of the model. 
 
 In this case, **Cross Validated Random Forest** model is chosen as the best model for predicting whether it will rain tomorrow.
+
+After obtaining the best model, it is then applied onto the full dataset of "WAUS2020.csv" to obtain the out-of-sample accuracy of the model. The data used to train and test the model are removed to ensure the data used are new and unseen to the model.
 ```{r}
-cat(paste("Accuracy: ", CM.cvrf$overall['Accuracy'], "F1: ", CM.cvrf$byClass['F1']))
+#Ensure the location is the same as the 10 locations we used to train
+WAUS.whole = read.csv("WAUS2020.csv")
+WAUS.whole <- WAUS.whole[(WAUS.whole$Location %in% L),]
+
+#Remove variables excluded in training
+col.remove <- c("Evaporation", "Sunshine", "Cloud9am", "Cloud3pm")
+WAUS.whole <- WAUS.whole[, !names(WAUS.whole) %in% col.remove, drop = FALSE]
+
+#Remove rows used in training and testing the model
+trainrow <- which(rownames(WAUS.whole) %in% rownames(WAUS.train))
+testrow <- which(rownames(WAUS.whole) %in% rownames(WAUS.test))
+
+WAUS.whole <- WAUS.whole[-trainrow, ]
+WAUS.whole <- WAUS.whole[-testrow, ]
+
+#Impute Missing Values with MICE Algorithm
+tempWAUS.whole <- WAUS.whole %>% mutate(
+  WindGustDir = as.factor(WindGustDir),
+  WindDir9am = as.factor(WindDir9am),
+  WindDir3pm = as.factor(WindDir3pm),
+  RainToday = as.factor(RainToday),
+  RainTomorrow = as.factor(RainTomorrow)
+)
+
+impute <- mice(tempWAUS.whole, maxit = 0)
+predMat = imp$predictorMatrix
+met = imp$method
+
+#Classify the 5 Categorical Variables into Unordered and Binary
+unordered <- c("WindGustDir", "WindDir9am", "WindDir3pm")
+binary <- c("RainToday", "RainTomorrow")
+
+#Assign polyreg for Unordered Variables and logreg.boost for Binary Variables
+met[unordered] = "polyreg"
+met[binary] = "logreg.boot"
+met
+
+#MICE Method to Impute Missing Values
+MICE.whole <- mice(tempWAUS.whole, maxit = 5, predictorMatrix = predMat, method = met, print = FALSE)
+
+#Export Imputed Data
+comp <- complete(MICE.whole, 1)
+
+#Check Unique Values
+sapply(comp, function(y) sum(length(which(is.na(y)))))
+
+WAUS.whole <- comp
+
+#Predict and Produce Confusion Matrix
+set.seed(100)
+WAUS.whole.pred <- predict(cvrf.grid, WAUS.whole) #Prediction
+
+CM.whole <- confusionMatrix(mode = "prec_recall", data = WAUS.whole.pred, reference = WAUS.whole$RainTomorrow) #Confusion Matrix
+
+cat(paste("Accuracy: ", CM.whole$overall['Accuracy'], "F1: ", CM.whole$byClass['F1']))
 ```
-In this case, the model predicts whether it will rain tomorrow with 83.83% accuracy and a F1-Score of 90.17%.
+In this case, the model predicts whether it will rain tomorrow with 86.55% out-of-sample accuracy and a F1-Score of 91.93%. The model generalize well to out-of-sample data and would produce a reliable prediction.
 ```{r}
 rmarkdown::render()
 ```
