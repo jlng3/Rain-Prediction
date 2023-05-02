@@ -1,0 +1,1105 @@
+---
+title: 'FIT3152 Data Analytics: Assignment 2'
+author: "Ng Jian Long"
+output: html_notebook
+---
+
+<style>
+body{
+  text_align: justify
+}
+</style>
+
+# Importing Data
+```{r}
+rm(list = ls())
+WAUS <- read.csv("WAUS2020.csv")
+L <- as.data.frame(c(1:49))
+
+set.seed(100)
+
+#Sample 10 Locations
+L <- L[sample(nrow(L), 10, replace = FALSE), ]
+
+#Sample 2000 rows
+WAUS <- WAUS[(WAUS$Location %in% L),]
+WAUS <- WAUS[sample(nrow(WAUS), 2000, replace = FALSE), ]
+```
+
+# Data Cleaning and Preprocessing
+```{r}
+summary(WAUS)
+```
+
+Based on the summary, most of the variables of this data contains missing values (NA). Before proceeding with the analysis, variables with significant amount of NA's will be dropped because these variables don't have sufficient data for prediction. In this case, we assumed that **variables with more than 20% of the data are missing values** (in this case, variables with more than 400 missing values) will be omitted.
+
+```{r}
+#Calculating Missing Values for Each Variables
+na_count <- sapply(WAUS, function(y) sum(length(which(is.na(y)))))
+
+#Indicate "Removed" for Variables with more than 200 NA's and "Maintained" Otherwise
+na_remove <- rep("Removed", length(na_count))
+na_remove[na_count < 400] <- "Maintained"
+na_count <- data.frame(na_count, na_remove)
+na_count
+```
+
+Based on the table above, the variables **Evaporation", "Sunshine", "Cloud9am"** and **"Cloud3pm"** have more than 400 missing values, thus these variables were omitted.
+
+```{r}
+#Removing Columns with More Than 200 Missing Values
+col_remove <- c("Evaporation", "Sunshine", "Cloud9am", "Cloud3pm")
+WAUS <- WAUS[, !names(WAUS) %in% col_remove, drop = FALSE]
+```
+
+For the remaining variables with missing values, the rows with missing values are **not omitted**. This is because we assume the data is **Missing Completely at Random (MCAR)** and therefore we could not simply discard it.
+
+```{r}
+#Proportion of Rows with Missing Values to the Whole Dataset
+na_rows <- apply(WAUS, 1, function (x) any(is.na(x)))
+length(which(na_rows)) / nrow(WAUS)
+```
+
+Based on the calculation above, rows with missing values account for 36.35% of the whole dataset. Therefore, deleting these rows will cause our dataset to shrink significantly. In this case, these missing values are handled using **Multiple Imputation by Chained Equation (MICE)** method.
+
+MICE method is a robust and informative method to deal with missing values. It involves imputing missing data through an iterative series of predictive models. In each iteration, each specified variable in the dataset is imputed using the other variables in the dataset. The iterations continue until convergence has been met. The whole process terminates until all specified variables have been imputed.
+
+Before implementing the MICE method, the variables "WindGustDir", "WindDir9am", "WindDir3pm", "RainToday" and "RainTomorrow" are converted into factor as MICE method cannot deal with strings and characters. 
+
+```{r}
+#Convert Character Variables into Factors
+library(dplyr, quietly = TRUE)
+
+tempWAUS <- WAUS %>% mutate(
+  WindGustDir = as.factor(WindGustDir),
+  WindDir9am = as.factor(WindDir9am),
+  WindDir3pm = as.factor(WindDir3pm),
+  RainToday = as.factor(RainToday),
+  RainTomorrow = as.factor(RainTomorrow)
+)
+```
+
+After conversion, MICE method is implemented. We first run the algorithm with 0 iteration to be able to modify its default imputation method used. This is because we have different classes of variables in our dataset so we need to modify the method used for each classes of variables.
+
+The numerical variables are left untact and the default imputation method is **Predictive Mean Matching (pmm)**. The imputation method for "WindGustDir", "WindDir9am" and "WindDir3pm" are set to **Polytomous Logistic Regression (polyreg)** which can dealt with unordered data effectively. Lastly, "RainToday" and "RainTomorrow" have their imputation method set to **Logistic Regression with Bootstrap (logreg.boot)** as they are binary variables.
+
+```{r}
+#MICE with 0 Iteration to Obtain its Method Matrix
+library(mice, quietly = TRUE)
+imp <- mice(tempWAUS, maxit = 0)
+predM = imp$predictorMatrix
+method = imp$method
+
+#Classify the 5 Categorical Variables into Unordered and Binary
+unordered <- c("WindGustDir", "WindDir9am", "WindDir3pm")
+binary <- c("RainToday", "RainTomorrow")
+
+#Assign polyreg for Unordered Variables and logreg.boost for Binary Variables
+method[unordered] = "polyreg"
+method[binary] = "logreg.boot"
+method
+
+#MICE Method to Impute Missing Values
+MICE <- mice(tempWAUS, maxit = 5, predictorMatrix = predM, method = method, print = FALSE)
+
+#Export Imputed Data
+complete <- complete(MICE, 1)
+```
+
+After exporting the imputed data, the data is checked to ensure that there are no missing values remained. The 5 categorical variables are also checked to ensure there are no impossible values imputed (for example, a 'K' imputed as direction in "WindGustDir" since K doesn't symbolize any direction).
+
+```{r}
+#Check Unique Values of Categorical Variables
+sapply(complete, function(y) sum(length(which(is.na(y)))))
+
+#A table of possible values for categorical variables
+cat_var <- list(complete$WindGustDir, complete$WindDir9am, complete$WindDir3pm, complete$RainToday, complete$RainTomorrow)
+
+lapply(cat_var, table)
+
+#Attach the Imputed Dataset back to WAUS
+WAUS <- complete
+```
+
+Based on the 5 tables above, there are no missing values left and there are no meaningless values imputed into the 5 categorical variables. Therefore, the data cleaning is considered complete and can be proceeded with exploratory analysis.
+
+Exploratory analysis will be conducted in two parts, with the first on the dependent variable "RainTomorrow" followed by the independent variables. 
+
+# Exploratory Analysis
+## Exploring Dependent Variable
+```{r}
+#Identify the Unique Values for Dependent Variable and Calculate its Frequency
+library(plyr, quietly = TRUE)
+
+freq_raintmr <- as.data.frame(table(WAUS$RainTomorrow))
+prop_raintmr <- freq_raintmr$Freq / length(WAUS$RainTomorrow)
+
+freq_table<- data.frame(freq_raintmr, prop_raintmr)
+
+colnames(freq_table) <- c("Unique Values", "Frequency", "Proportion")
+freq_table
+```
+
+From the table above, we can see that our dependent variable "RainTomorrow" is a **categorical variable** with two unique values "Yes" and "No". Based on our sampled data, there is **79%** of the time that it **will not rain tomorrow** and **21%** of the time that it **will rain tomorrow**.
+
+## Exploring Independent Variables
+In this section, the analysis is conducted by segregating the dataset into categorical and numerical variables. Different analysis will be conducted for different types of variables.
+
+### Exploring Categorical Variables
+```{r}
+#Extracting Categorical Variables
+categorical <- WAUS %>% select_if(~class(.) == 'factor')
+head(categorical)
+```
+
+From the table above, there are **5** categorical variables, which are "WindGustDir", "WindDir9am", "WindDir3pm", "RainToday" and "RainTomorrow". Among the 5, 2 of them ("RainToday" and "RainTomorrow") are binary categorical variables. Since "RainTomorrow" is our dependent variable, it has already been analyzed beforehand and thus will not be analyzed again.
+
+#### Analyzing "WindGustDir" Variable
+```{r}
+unique(WAUS$WindGustDir, incomparables = FALSE)
+freq_WindGustDir <- as.data.frame(table(WAUS$WindGustDir))
+colnames(freq_WindGustDir) <- c("Unique Values", "Frequency")
+freq_WindGustDir
+```
+
+There are 16 unique values for the "WindGustDir" variable. The frequency of each unique value is tabulated in freq_WindGustDir.
+
+####Analyzing "WindDir9am" Variable
+```{r}
+unique(WAUS$WindDir9am, incomparables = FALSE)
+freq_WindDir9am <- as.data.frame(table(WAUS$WindDir9am))
+colnames(freq_WindDir9am) <- c("Unique Values", "Frequency")
+freq_WindDir9am
+```
+
+There are 16 unique values for the "WindGustDir" variable. The frequency of each unique value is tabulated in freq_WindGustDir.
+
+#### Analyzing "WindDir3pm" Variable
+```{r}
+unique(WAUS$WindDir3pm, incomparables = FALSE)
+freq_WindDir3pm <- as.data.frame(table(WAUS$WindDir3pm))
+colnames(freq_WindDir3pm) <- c("Unique Values", "Frequency")
+freq_WindDir3pm
+```
+
+There are 16 unique values for the "WindGustDir" variable. The frequency of each unique value is tabulated in freq_WindGustDir.
+
+#### Analyzing "RainToday" Variable
+```{r}
+unique(WAUS$RainToday, incomparables = FALSE)
+freq_RainToday <- as.data.frame(table(WAUS$RainToday))
+colnames(freq_RainToday) <- c("Unique Values", "Frequency")
+freq_RainToday
+```
+
+There are 2 unique values for the "WindGustDir" variable. The frequency of each unique value is tabulated in freq_WindGustDir.
+
+### Exploring Numerical Variables
+```{r}
+#Extracting Numerical Variables
+numerical <- WAUS %>% select_if(~class(.) != 'factor')
+head(numerical)
+```
+
+From the table above, there are **14** numerical variables. Summary statistics of these variables is computed for further analysis.
+
+```{r}
+summary(numerical)
+```
+
+The summary statistics of all numerical variables are shown in the table above. From the summary statistics, there is a possibility of existence of outliers. This is because some of these variables have either their **minimum value too far away from their 1st quartile value** or their **maximum value too far away from their 3rd quartile value**. Boxplot of these variables is illustrated to support this claim.
+
+```{r}
+#Defining Boxplot Function
+library(ggplot2, quietly = TRUE)
+
+boxplot1 <- function (vars, title){
+  ggplot(numerical, aes(x = vars, y = 1)) + 
+    geom_boxplot(outlier.colour = "red", outlier.shape = 4, outlier.size = 6) + 
+    ggtitle(title) + labs(x = " ", y = " ")
+}
+
+#Plotting Boxplot for All Numerical Variables
+Day <- boxplot1(numerical$Day, "Day")
+Month <- boxplot1(numerical$Month, "Month")
+Year <- boxplot1(numerical$Year, "Year")
+Location <- boxplot1(numerical$Location, "Location")
+MinTemp <- boxplot1(numerical$MinTemp, "MinTemp")
+MaxTemp <- boxplot1(numerical$MaxTemp, "MaxTemp")
+Rainfall <- boxplot1(numerical$Rainfall, "Rainfall")
+WindGustSpeed <- boxplot1(numerical$WindGustSpeed, "WindGustSpeed")
+WindSpeed9am <- boxplot1(numerical$WindSpeed9am, "WindSpeed9am")
+WindSpeed3pm <- boxplot1(numerical$WindSpeed3pm, "WindSpeed3pm")
+Humidity9am <- boxplot1(numerical$Humidity9am, "Humidity9am")
+Humidity3pm <- boxplot1(numerical$Humidity3pm, "Humidity3pm")
+Temp9am <- boxplot1(numerical$Temp9am, "Temp9am")
+Temp3pm <- boxplot1(numerical$Temp3pm, "Temp3pm")
+
+#Display All Boxplots in Grid
+library(cowplot, quietly = TRUE)
+
+plot_grid(Day, Month, Year, Location, MinTemp, MaxTemp, Rainfall, WindGustSpeed, WindSpeed9am, WindSpeed3pm, Humidity9am, Humidity3pm, Temp9am, Temp3pm, nrow = 5)
+
+```
+
+From the boxplots above, "Rainfall", "WindGustSpeed", "WindSpeed9am" and "Humidity9am" **have outliers** in their data. The remaining variables are proven to have no outliers. Before proceeding with model training, these outliers should be treated.
+
+In the case of predicting whether tomorrow will rain, such extreme values may be logical as it may be due to extreme whether or the location. Also, since we are random sampling 2000 observations from the original dataset, it is possible to sample data from, for instance, a location with very high temperature or humidity for a particular month, which is logical in the original dataset but is seemed as outlier in our sample dataset. Therefore, these outliers are **not omitted**. 
+
+As we have decided not to omit the outliers, regression methods such as linear regression and logistic regression is not applicable in this situation as these methods are very sensitive to extreme values. In this case, tree-based classification methods are more suitable as they can handle non-linear relationships between the predictor variables and the response variable.
+
+Lastly, we will check the correlation between the independent variables.
+
+## Correlation
+```{r}
+#Plotting Correlations Greater than 0.8
+library(purrr, quietly = TRUE)
+library(corrplot, quietly = TRUE)
+
+numeric <- map_lgl(WAUS, is.numeric) #Extract All Numeric Variables
+corr <- cor(WAUS[, numeric]) #Calculate Correlation between Variables
+diag(corr) <- 0 #Set the Diagonal of Heat Map as 0
+high_value <- apply(abs(corr) >= 0.8, 2, any) #Extract Variables with Correlation > 0.8
+corrplot(corr[high_value, high_value], method = "number") #Plot Variables with Correlation > 0.8
+```
+
+Based on the heat map above, "MinTemp", "MaxTemp", "Temp9am" and "Temp3pm" are **highly correlated** with each other. In this case, its treatment depends on how good each variable in differentiating whether it will rain tomorrow.
+
+```{r}
+#Drawing Boxplot to Visualize Whether Each Variable Differentiates Itself in Deciding whether It Will Rain Tomorrow
+library(ggthemes, quietly = TRUE)
+
+#Function for Boxplot
+boxplot2 <- function(vars, title){
+  ggplot(WAUS, aes(x = RainTomorrow, y = vars)) + 
+    geom_violin() + 
+    theme_economist() + 
+    stat_summary(fun.data = mean_sdl, geom = "pointrange", colour = "chartreuse4") + 
+    ylab(title)
+}
+
+#Plotting Boxplot for the Highly Correlated Variables
+mintemp <- boxplot2(WAUS$MinTemp, "MinTemp")
+maxtemp <- boxplot2(WAUS$MaxTemp, "MaxTemp")
+temp9 <- boxplot2(WAUS$Temp9am, "Temp9am")
+temp3 <- boxplot2(WAUS$Temp3pm, "Temp3pm")
+
+#Display Boxplots in Grid
+plot_grid(mintemp, maxtemp, temp9, temp3, nrow = 2, ncol = 2)
+```
+
+Based on the graph above, there is no single variable outperform others in differentiating whether tomorrow will rain, thus only one variable will be kept and the remaining 3 will be removed. 
+
+The decision to maintained one variable while removing the other highly correlated variables are based on [discussion by Saabas](http://blog.datadive.net/selecting-good-features-part-iii-random-forests/). For impurity based ranking models such as random forest, when the data has two or more correlated features, the model will "think" that any of these correlated features can be used as the predictor, with no concrete preference over the others. But once one of them is used, the importance of others is significantly reduced since effectively the impurity they can remove is already removed by the first feature. As a consequence, they will have a lower reported importance. 
+
+When interpreting the data, this can lead to the incorrect conclusion that one of the variables is a strong predictor while the others in the same group are unimportant, while actually they are very close in terms of their relationship with the response variable.
+
+Not only that, according to  [Brownlee](https://machinelearningmastery.com/better-naive-bayes/), the performance of Naive Bayes can degrade if the data contains highly correlated features. This is because the highly correlated features are voted for twice in the model, over inflating their importance.
+
+In this case, **"Temp9am"** is chosen as the variable to be remained and the remaining 3 variables are removed.
+
+```{r}
+#Remove Highly Correlated Variables
+library(magrittr, quietly = TRUE)
+WAUS %<>% select(-MinTemp, -MaxTemp, -Temp3pm)
+```
+
+Similarly, "Pressure9am" and "Pressure3pm" are also highly correlated.
+```{r}
+#Plotting Boxplot for the Highly Correlated Variables
+pressure9 <- boxplot2(WAUS$Pressure9am, "Pressure9am")
+pressure3 <- boxplot2(WAUS$Pressure3pm, "Pressure3pm")
+
+#Display Boxplots in Grid
+plot_grid(pressure9, pressure3, nrow = 2, ncol = 1)
+```
+Similarly, there is no single variable outperform others in differentiating whether tomorrow will rain, thus only one variable will be kept and the other will be removed. In this case, **Pressure9am** is retained and **Pressure3pm** is removed.
+
+```{r}
+WAUS %<>% select(-Pressure3pm)
+```
+
+# Classification Model Implementation
+## Segregate Data into Training and Test Set
+After data cleaning and preprocessing, classification model is implemented to predict whether it will rain tomorrow. The data is segregated into a training set and a test set.
+```{r}
+set.seed(100)
+train.row = sample(1:nrow(WAUS), 0.7 * nrow(WAUS))
+WAUS.train = WAUS[train.row, ]
+WAUS.test = WAUS[-train.row, ]
+```
+
+## Classification Model
+Classification models are then implemented on the segregated data. After implementing the models, a confusion matrix is constructed and a few important indicators are determined:
+
+**1. Accuracy**
+Accuracy is the ratio of correctly predicted observation to the total observation. A higher accuracy suggests lower training error rate.
+**2. Precision**
+Precision is the ratio of correctly predicted positive observations to the total predicted positive observations. A higher precision indicates that the model has a lower false positive rate.  
+**3. Recall**
+Recall is the ratio of correctly predicted positive observations to all the observations in the actual class. 
+**4. F1**
+F1 score is the weighted average of Precision and Recall. Therefore, this score takes both false positives and false negatives into account.
+
+In general, a higher value for these indicators are preferable.
+
+Not only that, from the confusion matrix, we would also like to determine:
+**1. True Positive Rate**
+True positive is the outcome where the model correctly predicts the positive class.A higher true positive rate is always preferable.
+**2. True Negative Rate**
+True negative is the outcome where the model correctly predicts the negative class.A higher true negative rate is always preferable.
+**3. Type I Error / False Positive Rate**
+Type I Error occurs when the model incorrectly rejects the true null hypothesis. In this case, it means that the model predict that it will not rain tomorrow but in reality it does. A lower Type I Error is always preferable.
+**4. Type II Error / False Negative Rate**
+Type II Error occurs when the model fail to reject the false null hypothesis. In this case, it means that the model predict that it will rain tomorrow but in reality it doesn't. A lower Type II Error is always preferable.
+
+In this project, **5** classification models will be applied. For all classification models, **it will not rain tomorrow** will be viewed as the **positive class**, while **it will rain tomorrow** the **negative class**. 
+
+### 1. Decision Tree
+```{r}
+#Calculating a Decision Tree
+library(tree, quietly = TRUE)
+set.seed(100)
+WAUS.tree <- tree(RainTomorrow ~ ., data = WAUS.train)
+
+#Visualizing decision tree
+{
+ plot(WAUS.tree)
+ text(WAUS.tree, pretty = 0)
+}
+
+#Predictions and Construct Confusion Matrix
+set.seed(100)
+WAUS.predtree <- predict(WAUS.tree, WAUS.test, type = "class") #Prediction
+
+library(caret, quietly = TRUE)
+library(e1071, quietly = TRUE)
+
+CM.tree <- confusionMatrix(mode = "prec_recall", data = WAUS.predtree, reference = WAUS.test$RainTomorrow) #Confusion Matrix
+print(CM.tree)
+```
+
+Based on the confusion matrix, the accuracy of Decision Tree model is **82.33%**.
+
+```{r}
+#Calculating Type I Error
+T1.tree <- CM.tree$table[3] / (CM.tree$table[3] + CM.tree$table[4])
+
+#Calculating Type II Error
+T2.tree <- 1 - (CM.tree$table[1] / (CM.tree$table[1] + CM.tree$table[2]))
+
+#Calculating True Positive Rate
+TP.tree <- 1 - T2.tree
+
+#Calculating True Negative Rate
+TN.tree <- 1 - T1.tree
+
+#Constructing Summary Table for Decision Tree
+t1 <- rbind(CM.tree$overall['Accuracy'], CM.tree$byClass['Pos Pred Value'], CM.tree$byClass['Sensitivity'], CM.tree$byClass['F1'], T1.tree, T2.tree, TP.tree, TN.tree)
+
+rownames(t1) = c("Accuracy", "Precision", "Recall", "F1", "Type I Error", "Type II Error", "True Positive", "True Negative")
+colnames(t1) = "Decision Tree"
+
+library(knitr, quietly = TRUE)
+library(kableExtra, quietly = TRUE)
+t1 %>% kable() %>% kable_styling("responsive")
+```
+
+From t1, we can see that, while Decision Tree has accuracy, precision, recall and F1 Score approximately 80% and above, high True Positive and low Type II Error, it does have a problem of **higher Type I Error**, which means that this model may be insufficient in correctly predicting True Negative values, which, in this case, it may wrongly predict that it will not rain tomorrow while in reality it rains tomorrow.
+
+### 2. Naive Bayes
+```{r}
+#Implementing Naive Bayes
+library(e1071, quietly = TRUE)
+set.seed(100)
+WAUS.bayes <- naiveBayes(RainTomorrow ~ ., data = WAUS.train)
+
+#Prediction and Construct Confusion Matrix
+set.seed(100)
+WAUS.predbayes <- predict(WAUS.bayes, WAUS.test) #Prediction
+
+CM.bayes <- confusionMatrix(mode = "prec_recall", data = WAUS.predbayes, reference = WAUS.test$RainTomorrow) #Confusion Matrix
+print(CM.bayes)
+```
+
+Based on the confusion matrix, the accuracy of Naive Bayes is **81.00%**.
+
+```{r}
+#Calculating Type I Error
+T1.bayes <- CM.bayes$table[3] / (CM.bayes$table[3] + CM.bayes$table[4])
+
+#Calculating Type II Error
+T2.bayes <- 1 - (CM.bayes$table[1] / (CM.bayes$table[1] + CM.bayes$table[2]))
+
+#Calculating True Positive Rate
+TP.bayes <- 1 - T2.bayes
+
+#Calculating True Negative Rate
+TN.bayes <- 1 - T1.bayes
+
+#Constructing Summary Table for Naive Bayes
+t2 <- rbind(CM.bayes$overall['Accuracy'], CM.bayes$byClass['Pos Pred Value'], CM.bayes$byClass['Sensitivity'], CM.bayes$byClass['F1'], T1.bayes, T2.bayes, TP.bayes, TN.bayes)
+
+rownames(t2) = c("Accuracy", "Precision", "Recall", "F1", "Type I Error", "Type II Error", "True Positive", "True Negative")
+colnames(t2) = "Naive Bayes"
+
+t2 %>% kable() %>% kable_styling("responsive")
+```
+
+Similar to Decision Tree, Naive Bayes has **higher Type I Error**, indicating that this model may wrongly predict that it will not rain tomorrow while in reality it rains tomorrow.
+
+### 3. Bagging
+```{r}
+#Implementing Bagging
+library(ipred, quietly = TRUE)
+library(adabag, quietly = TRUE)
+set.seed(100)
+WAUS.bag <- bagging(RainTomorrow ~ ., data = WAUS.train, mfinal = 10)
+
+#Prediction and Construct Confusion Matrix
+set.seed(100)
+WAUS.predbag <- predict.bagging(WAUS.bag, WAUS.test) #Prediction
+
+CM.bag <- confusionMatrix(mode = "prec_recall", WAUS.predbag$confusion) #Confusion Matrix
+print(CM.bag)
+```
+
+Based on the confusion matrix, the accuracy of Bagging is **84.00%**.
+
+```{r}
+#Calculating Type I Error
+T1.bag <- CM.bag$table[3] / (CM.bag$table[3] + CM.bag$table[4])
+
+#Calculating Type II Error
+T2.bag <- 1 - (CM.bag$table[1] / (CM.bag$table[1] + CM.bag$table[2]))
+
+#Calculating True Positive Rate
+TP.bag <- 1 - T2.bag
+
+#Calculating True Negative Rate
+TN.bag <- 1 - T1.bag
+
+#Constructing Summary Table for Bagging
+t3 <- rbind(CM.bag$overall['Accuracy'], CM.bag$byClass['Pos Pred Value'], CM.bag$byClass['Sensitivity'], CM.bag$byClass['F1'], T1.bag, T2.bag, TP.bag, TN.bag)
+
+rownames(t3) = c("Accuracy", "Precision", "Recall", "F1", "Type I Error", "Type II Error", "True Positive", "True Negative")
+colnames(t3) = "Bagging"
+
+t3 %>% kable() %>% kable_styling("responsive")
+```
+
+Similar to both Decision Tree and Naive Bayes, Bagging has a **higher Type I Error**, indicating that this model may wrongly predict that it will not rain tomorrow while in reality it rains tomorrow.
+
+### 4. Boosting
+
+```{r}
+#Boosting
+library(adabag, quietly = TRUE)
+set.seed(100)
+WAUS.boost <- boosting(RainTomorrow ~ ., data = WAUS.train, mfinal = 10)
+
+#Prediction and Construct Confusion Matrix
+set.seed(100)
+WAUS.predboost <- predict.boosting(WAUS.boost, WAUS.test) #Prediction
+
+CM.boost <- confusionMatrix(mode = "prec_recall", WAUS.predboost$confusion) #Confusion Matrix
+print(CM.boost)
+```
+
+Based on the confusion matrix, the accuracy of Boosting is **80.33%**.
+
+```{r}
+#Calculating Type I Error
+T1.boost <- CM.boost$table[3] / (CM.boost$table[3] + CM.boost$table[4])
+
+#Calculating Type II Error
+T2.boost <- 1 - (CM.boost$table[1] / (CM.boost$table[1] + CM.boost$table[2]))
+
+#Calculating True Positive Rate
+TP.boost <- 1 - T2.boost
+
+#Calculating True Negative Rate
+TN.boost <- 1 - T1.boost
+
+#Constructing Summary Table for Boosting
+t4 <- rbind(CM.boost$overall['Accuracy'], CM.boost$byClass['Pos Pred Value'], CM.boost$byClass['Sensitivity'], CM.boost$byClass['F1'], T1.boost, T2.boost, TP.boost, TN.boost)
+
+rownames(t4) = c("Accuracy", "Precision", "Recall", "F1", "Type I Error", "Type II Error", "True Positive", "True Negative")
+colnames(t4) = "Boosting"
+
+t4 %>% kable() %>% kable_styling("responsive")
+```
+
+Similar to the three methods above, Boosting has a **higher Type I Error**, indicating that this model may wrongly predict that it will not rain tomorrow while in reality it rains tomorrow.
+
+### 5. Random Forest
+```{r}
+#Implementing Random Forest
+library(randomForest, quietly = TRUE)
+set.seed(100)
+WAUS.rf <- randomForest(RainTomorrow ~ ., data = WAUS.train)
+
+#Prediction and Construct Confusion Matrix
+set.seed(100)
+WAUS.predrf <- predict(WAUS.rf, WAUS.test) #Prediction
+
+CM.rf <- confusionMatrix(mode = "prec_recall", data = WAUS.predrf, reference = WAUS.test$RainTomorrow) #Confusion Matrix
+print(CM.rf)
+```
+
+Based on the confusion matrix, the accuracy of Random Forest is **83.83%**.
+
+```{r}
+#Calculating Type I Error
+T1.rf <- CM.rf$table[3] / (CM.rf$table[3] + CM.rf$table[4])
+
+#Calculating Type II Error
+T2.rf <- 1 - (CM.rf$table[1] / (CM.rf$table[1] + CM.rf$table[2]))
+
+#Calculating True Positive Rate
+TP.rf <- 1 - T2.rf
+
+#Calculating True Negative Rate
+TN.rf <- 1 - T1.rf
+
+#Constructing Summary Table for Random Forest
+t5 <- rbind(CM.rf$overall['Accuracy'], CM.rf$byClass['Pos Pred Value'], CM.rf$byClass['Sensitivity'], CM.rf$byClass['F1'], T1.rf, T2.rf, TP.rf, TN.rf)
+
+rownames(t5) = c("Accuracy", "Precision", "Recall", "F1", "Type I Error", "Type II Error", "True Positive", "True Negative")
+colnames(t5) = "Random Forest"
+
+t5 %>% kable() %>% kable_styling("responsive")
+```
+
+While Random Forest doesn't have Type I Error as high as the other 4 methods, it is still not negligible as the Type I Error is only a slight difference from True Negative rate.
+
+## ROC Curve and Area Under the Curve (AUC)
+```{r}
+library(ROCR, quietly = TRUE)
+#ROC for Decision Tree
+WAUS.prob.tree <- predict(WAUS.tree, WAUS.test, type = "vector") #Prediction as Probability
+WAUSpredtree <- prediction(WAUS.prob.tree[, 2], WAUS.test$RainTomorrow)
+WAUSperftree <- performance(WAUSpredtree, "tpr", "fpr")
+
+#ROC for Naive Bayes
+WAUS.prob.bayes <- predict(WAUS.bayes, WAUS.test, type = "raw")
+WAUSpredbayes <- prediction(WAUS.prob.bayes[, 2], WAUS.test$RainTomorrow)
+WAUSperfbayes <- performance(WAUSpredbayes, "tpr", "fpr")
+
+#ROC for Bagging
+WAUSpredbag <- prediction(WAUS.predbag$prob[, 2], WAUS.test$RainTomorrow)
+WAUSperfbag <- performance(WAUSpredbag, "tpr", "fpr")
+
+#ROC for Boosting
+WAUSpredboost <- prediction(WAUS.predboost$prob[, 2], WAUS.test$RainTomorrow)
+WAUSperfboost <- performance(WAUSpredboost, "tpr", "fpr")
+
+#Roc for Random Forest
+WAUS.prob.rf <- predict(WAUS.rf, WAUS.test, type = "prob")
+WAUSpredrf <- prediction(WAUS.prob.rf[, 2], WAUS.test$RainTomorrow)
+WAUSperfrf <- performance(WAUSpredrf, "tpr", "fpr")
+
+#Plot ROC for All Classifiers
+{plot(WAUSperftree, col = "red")
+ abline(0, 1)
+ plot(WAUSperfbayes, add = TRUE, col = "blue")
+ plot(WAUSperfbag, add = TRUE, col = "green")
+ plot(WAUSperfboost, add = TRUE, col = "purple")
+ plot(WAUSperfrf, add = TRUE, col = "black")
+ legend(x = 0.7, y = 0.6, lty = 1, legend = c("Decision Tree", "Naive Bayes", "Bagging", "Boosting", "Random Forest"), col = c("red", "blue", "green", "purple", "black"), text.font = 4, box.lty = 0)
+}
+```
+ROC Curve for all 5 classifiers are plotted in the graph above. 
+
+```{r}
+#Calculating AUC for All Curves
+#Decision Tree
+AUC.tree <- performance(WAUSpredtree, "auc")
+AUC.tree <- round(as.numeric(AUC.tree@y.values), 4)
+
+#Naive Bayes
+AUC.bayes <- performance(WAUSpredbayes, "auc")
+AUC.bayes <- round(as.numeric(AUC.bayes@y.values), 4)
+
+#Bagging
+AUC.bag <- performance(WAUSpredbag, "auc")
+AUC.bag <- round(as.numeric(AUC.bag@y.values), 4)
+
+#Boosting
+AUC.boost <- performance(WAUSpredboost, "auc")
+AUC.boost <- round(as.numeric(AUC.boost@y.values), 4)
+
+#Random Forest
+AUC.rf <- performance(WAUSpredrf, "auc")
+AUC.rf <- round(as.numeric(AUC.rf@y.values), 4)
+
+#Tabulate All AUC Values
+AUC.table <- cbind(AUC.tree, AUC.bayes, AUC.bag, AUC.boost, AUC.rf)
+rownames(AUC.table) <- "AUC"
+colnames(AUC.table) <- c("Decision Tree", "Naive Bayes", "Bagging", "Boosting", "Random Forest")
+AUC.table %>% kable() %>% kable_styling("responsive")
+```
+
+AUC for all 5 classifiers are summarized in the table above. To simplify comparison, a summary table consist of all important information from confusion matrix and AUC for all 5 classifiers are generated.
+
+```{r}
+#Tabulate All Information in One Table
+summary.table <- cbind(t1, t2[1:8, ], t3[1:8, ], t4[1:8, ], t5[1:8, ])
+summary.table <- rbind(summary.table, AUC.table)
+summary.table <- round(summary.table, 4)
+colnames(summary.table) <- c("Decision Tree", "Naive Bayes", "Bagging", "Boosting", "Random Forest")
+
+#Identify the Highest Value among the 5 Classifiers
+row <- seq_len(ncol(summary.table))
+
+{
+max.acc <- which.max(summary.table[1, ])
+summary.table[1, ] <- summary.table[1, ] %>% cell_spec(bold = row == max.acc)
+
+max.prec <- which.max(summary.table[2, ])
+summary.table[2, ] <- summary.table[2, ] %>% cell_spec(bold = row == max.prec)
+
+max.rec <- which.max(summary.table[3, ])
+summary.table[3, ] <- summary.table[3, ] %>% cell_spec(bold = row == max.rec)
+
+max.f1 <- which.max(summary.table[4, ])
+summary.table[4, ] <- summary.table[4, ] %>% cell_spec(bold = row == max.f1)
+
+max.tp <- which.max(summary.table[7, ])
+summary.table[7, ] <- summary.table[7, ] %>% cell_spec(bold = row == max.tp)
+
+max.tn <- which.max(summary.table[8, ])
+summary.table[8, ] <- summary.table[8, ] %>% cell_spec(bold = row == max.tn)
+
+max.auc <- which.max(summary.table[9, ])
+summary.table[9, ] <- summary.table[9, ] %>% cell_spec(bold = row == max.auc)
+
+#Identify the Smallest Value among the 5 Classifiers
+min.t1 <- which.min(summary.table[5, ])
+summary.table[5, ] <- summary.table[5, ] %>% cell_spec(bold = row == min.t1)
+
+min.t2 <- which.min(summary.table[6, ])
+summary.table[6, ] <- summary.table[6, ] %>% cell_spec(bold = row == min.t2)
+}
+
+
+summary.table %>% kable(booktabs = TRUE, escape = FALSE) %>% kable_styling("responsive")
+```
+
+Based on the table above, we can see that all classifiers performed similarly, as the lowest values in categories that desire higher value have minor difference compared to the highest values, simiarly for the categories that desire lower value. Therefore, we can say that **there is no single best classifier that outperforms the other**.
+
+## Variable Performance Evaluation
+
+```{r}
+#Attribute Importance
+{cat("\nDecision Tree Attribute Importance\n")
+ print(summary(WAUS.tree))
+ cat("\nBagging Attribute Importance\n")
+ print(WAUS.bag$importance)
+ cat("\nBoosting Attribute Importance\n")
+ print(WAUS.boost$importance)
+ cat("\nRandom Forest Attribute Importance\n")
+ print(WAUS.rf$importance)
+}
+```
+
+From the summary above, **no variables will be omitted** from the data. This is because each variable has vary performance in different classifiers. For example, "RainToday" is not used in Decision Tree and scores 0 in Bagging and Boosting, but have relative importance in Random Forest. Since there is no one agreement achieved by all 4 classifiers, no variables will be omitted.
+"
+In terms of the most important variables in predicting whether it will rain tomorrow, **"Humidity3pm"** is the **single most important variable**. This is because it is used in Decision Tree and **scores highest** in bagging, boosting and random forest. Not only that, **"WindGustDir", "WindDir9am", "WindDir3pm"** and **"WindGustSpeed"** are also significant variables as they are used in Decision Tree and always are **the top 5 scores** in all classifiers.
+
+# Further Modifications
+As there is no classifier that outperforms others, additional attempts are required. 
+
+## Improvizing Tree-Based Classifier
+One potential way is to tune the hyperparameter of existing model, in hope to find the best classifier to predict whether it will rain tomorrow. In this case, the **Random Forest** classifier is chosen to be fine-tuned because it is a theoretically better model than decision tree, bagging and boosting that combines the strengths of these methods while minimizing their weaknesses.
+
+In terms of decision trees, random forest reduces the tendency of a decision tree to overfit the training data by constructing a multitude of decision trees with random subsets of the features and training data, and then averaging the results to obtain a more robust prediction.
+
+Bagging and boosting are also ensemble methods like random forest, but they focus on a single decision tree, while random forest combines multiple decision trees. Bagging is a method of creating multiple bootstrapped training sets from the original dataset, and then constructing a decision tree for each set. Boosting, on the other hand, iteratively adjusts the weights of the training data points to improve the classification accuracy.
+
+Therefore, comparing all 4 classifiers, fine-tuning random forest has the best chance of discovering the best model for predicting whether it will rain tomorrow.
+
+To improve the Random Forest classifier, a **k-Fold Cross Validated Random Forest** is proposed to identify the optimal $mtry$ for Random Forest. In the caret package, $mtry$ can be tuned using either "random" or "grid" search strategy. In this case, the **grid search algorithm** is used because it is more likely to find the optimal hyperparameters for the model, since it explores the entire hyperparameter space systematically. Although it comes at the cost of computational efficiency, especially for high-dimensional hyperparameter spaces, the benefit would still outweight the cost for a relatively small dataset.
+
+Grid search is the process of performing hyper parameter tuning in order to determine the optimal values for a given model. Each axis of the grid is an algorithm parameter, and points in the grid are specific combinations of parameters. Because we are only tuning one parameter, the grid search is a linear search through a vector of candidate values.
+
+```{r}
+#Varying mtry to Decide the optimal mtry
+library(caret, quietly = TRUE)
+
+#Grid Search
+set.seed(100)
+trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3, search = "grid")
+tunegrid <- expand.grid(.mtry = (1:15))
+cvrf.grid <- train(RainTomorrow ~ ., data = WAUS.train, method = "rf", metric = 'Accuracy', tuneGrid = tunegrid, trControl = trctrl)
+print(cvrf.grid)
+```
+
+From the results, it is identified that $mtry = 9$ has the highest accuracy. Therefore, $mtry = 9$ is used for the Random Forest model.
+
+```{r}
+#Prediction and Construct Confusion Matrix
+set.seed(100)
+WAUS.predrfgrid <- predict(cvrf.grid, WAUS.test) #Prediction
+
+CM.cvrf <- confusionMatrix(mode = "prec_recall", data = WAUS.predrfgrid, reference = WAUS.test$RainTomorrow) #Confusion Matrix
+print(CM.cvrf)
+```
+
+From the confusion matrix above, the accuracy of the model is **83.83%**.
+
+```{r}
+#Calculating Type I Error
+T1.cvrf <- CM.cvrf$table[3] / (CM.cvrf$table[3] + CM.cvrf$table[4])
+
+#Calculating Type II Error
+T2.cvrf <- 1 - (CM.cvrf$table[1] / (CM.cvrf$table[1] + CM.cvrf$table[2]))
+
+#Calculating True Positive Rate
+TP.cvrf <- 1 - T2.cvrf
+
+#Calculating True Negative Rate
+TN.cvrf <- 1 - T1.cvrf
+
+#Constructing ROC Curve
+WAUS.prob.cvrf <- predict(cvrf.grid, WAUS.test, type = "prob")
+WAUSpredcvrf <- ROCR::prediction(WAUS.prob.cvrf[, 2], WAUS.test$RainTomorrow)
+WAUSperfcvrf <- performance(WAUSpredcvrf, "tpr", "fpr")
+
+#Plot ROC for All Classifiers
+{plot(WAUSperftree, col = "red")
+ abline(0, 1)
+ plot(WAUSperfbayes, add = TRUE, col = "blue")
+ plot(WAUSperfbag, add = TRUE, col = "green")
+ plot(WAUSperfboost, add = TRUE, col = "purple")
+ plot(WAUSperfrf, add = TRUE, col = "black")
+ plot(WAUSperfcvrf, add = TRUE, col = "darkorange")
+ legend(x = 0.65, y = 0.6, lty = 1, legend = c("Decision Tree", "Naive Bayes", "Bagging", "Boosting", "Random Forest", "CV Random Forest"), col = c("red", "blue", "green", "purple", "black", "darkorange"), text.font = 4, box.lty = 0)
+}
+```
+The ROC Curve that includes the Cross Validated Random Forest is as illustrated in the figure above.
+
+```{r}
+#Calculating AUC
+AUC.cvrf <- performance(WAUSpredcvrf, "auc")
+AUC.cvrf <- round(as.numeric(AUC.cvrf@y.values), 4)
+
+#Constructing Summary Table for Cross Validated Random Forest
+t6 <- rbind(CM.cvrf$overall['Accuracy'], CM.cvrf$byClass['Pos Pred Value'], CM.cvrf$byClass['Sensitivity'], CM.cvrf$byClass['F1'], T1.cvrf, T2.cvrf, TP.cvrf, TN.cvrf, AUC.cvrf)
+t6 <- round(t6, 4)
+
+#Comparing Random Forest and CV Random Forest
+summary.table1 <- cbind(t5[1:8, ], t6[1:8, ])
+AUC.table1 <- cbind(AUC.rf, AUC.cvrf)
+rownames(AUC.table1) <- "AUC"
+summary.table1 <- rbind(summary.table1, AUC.table1)
+summary.table1 <- round(summary.table1, 4)
+
+colnames(summary.table1) <- c("Random Forest", "CV Random Forest")
+
+#Identify the Highest Value between the Two Classifiers
+row <- seq_len(ncol(summary.table1))
+
+{
+max.acc <- which.max(summary.table1[1, ])
+summary.table1[1, ] <- summary.table1[1, ] %>% cell_spec(bold = row == max.acc)
+
+max.prec <- which.max(summary.table1[2, ])
+summary.table1[2, ] <- summary.table1[2, ] %>% cell_spec(bold = row == max.prec)
+
+max.rec <- which.max(summary.table1[3, ])
+summary.table1[3, ] <- summary.table1[3, ] %>% cell_spec(bold = row == max.rec)
+
+max.f1 <- which.max(summary.table1[4, ])
+summary.table1[4, ] <- summary.table1[4, ] %>% cell_spec(bold = row == max.f1)
+
+max.tp <- which.max(summary.table1[7, ])
+summary.table1[7, ] <- summary.table1[7, ] %>% cell_spec(bold = row == max.tp)
+
+max.tn <- which.max(summary.table1[8, ])
+summary.table1[8, ] <- summary.table1[8, ] %>% cell_spec(bold = row == max.tn)
+
+max.auc <- which.max(summary.table1[9, ])
+summary.table1[9, ] <- summary.table1[9, ] %>% cell_spec(bold = row == max.auc)
+
+#Identify the Smallest Value among the 5 Classifiers
+min.t1 <- which.min(summary.table1[5, ])
+summary.table1[5, ] <- summary.table1[5, ] %>% cell_spec(bold = row == min.t1)
+
+min.t2 <- which.min(summary.table1[6, ])
+summary.table1[6, ] <- summary.table1[6, ] %>% cell_spec(bold = row == min.t2)
+}
+
+summary.table1 %>% kable(booktabs = TRUE, escape = FALSE) %>% kable_styling("responsive")
+```
+
+Based on the summary table above, the performance of Cross Validated Random Forest doesn't differ much from non-cross-validated random forest. This could mean that the model is not overfitting the data.
+
+```{r}
+#Out of Bag Error
+{
+  plot(WAUS.rf$err.rate[, 1], col = "red", type = 'l')
+  par(new = TRUE)
+  cvrf.error <- as.data.frame(cvrf.grid$finalModel['err.rate'])
+  plot(cvrf.error[, 1], col = "blue", type = 'l')
+  legend("topright", legend = c("Random Forest", "CV Random Forest"), col = c("red", "blue"), lty = 1)
+}
+```
+Based on the graph above, the Cross Validated Random Forest has almost the same performance as Random Forest in terms of out-of-bag error, suggesting that overfitting is not an issue. In this case, the cross-validated random forest is chosen to be the current best model as cross validation provides a more reliable estimate of the model's performance.
+
+## Artificial Neural Network
+Another consideration is to use Artificial Neural Network (ANN). ANN can be used to predict the class of an input based on its features. The input features are passed through the network, and each neuron performs a weighted sum of the inputs and applies an activation function to produce an output. The outputs of the neurons in the final layer correspond to the predicted class probabilities, and the class with the highest probability is selected as the predicted class.
+
+One of the key strengths of ANNs is **their ability to learn complex non-linear relationships between the input features and the output classes**. This makes ANNs particularly useful for classification tasks where the decision boundary between classes is non-linear or complex. ANNs can also **handle high-dimensional data** and can automatically learn relevant features from the data, all of which are relevant to the training data we possess.
+```{r}
+library(neuralnet, quietly = TRUE)
+
+ann.data = WAUS
+
+#Recode Categorical Variable as Numeric
+#"RainToday" and "RainTomorrow" (0 - "No", 1 - "Yes")
+ann.data$RainToday <- as.numeric(recode(ann.data$RainToday, 'No' = '0','Yes' = '1'))
+ann.data$RainTomorrow <- as.numeric(recode(ann.data$RainTomorrow, 'No' = '0','Yes' = '1'))
+
+#"WindGustDir", "WindDir9am" and "WindDir3pm"
+#The numeric value of direction follows clockwise direction from 1 - 16
+ann.data$WindGustDir <- as.numeric(recode(ann.data$WindGustDir, 'N' = '1','NNE' = '2','NE' = '3','ENE' = '4','E' = '5','ESE' = '6','SE' = '7', 'SSE' = '8','S' = '9','SSW' = '10','SW' = '11', 'WSW' = '12','W' = '13','WNW' = '14', 'NW' = '15','NNW' = '16'))
+
+ann.data$WindDir9am <- as.numeric(recode(ann.data$WindDir9am, 'N' = '1','NNE' = '2','NE' = '3','ENE' = '4','E' = '5','ESE' = '6','SE' = '7', 'SSE' = '8','S' = '9','SSW' = '10','SW' = '11', 'WSW' = '12','W' = '13','WNW' = '14', 'NW' = '15','NNW' = '16'))
+
+ann.data$WindDir3pm <- as.numeric(recode(ann.data$WindDir3pm, 'N' = '1','NNE' = '2','NE' = '3','ENE' = '4','E' = '5','ESE' = '6','SE' = '7', 'SSE' = '8','S' = '9','SSW' = '10','SW' = '11', 'WSW' = '12','W' = '13','WNW' = '14', 'NW' = '15','NNW' = '16'))
+
+#min max normalization
+normalization <-  function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+#Reset Training and Test Data
+set.seed(100)
+ann.data <- apply(ann.data, 2, normalization)
+
+training <- sample(1:nrow(ann.data), 0.7*nrow(ann.data))
+ann.train <- as.data.frame(ann.data[training, ])
+ann.test <- as.data.frame(ann.data[-training, ])
+
+#ANN
+ann <- neuralnet(RainTomorrow == 1 ~ ., ann.train, hidden = 2, stepmax = 1e6, linear.output = FALSE)
+
+#Making Prediction
+set.seed(100)
+ann.pred <- neuralnet::compute(ann, ann.test)
+prob.ann <- ann.pred$net.result
+
+pred <- ifelse(prob.ann > 0.5, 1, 0)
+
+#Constructing Confusion Matrix
+CM.ann <- confusionMatrix(mode = "prec_recall", data = as.factor(pred), reference = as.factor(ann.test$RainTomorrow))
+print(CM.ann)
+```
+
+Based on the confusion matrix, the accuracy reported is **84.00%**.
+
+```{r}
+#Calculating Type I Error
+T1.ann <- CM.ann$table[3] / (CM.ann$table[3] + CM.ann$table[4])
+
+#Calculating Type II Error
+T2.ann <- 1 - (CM.ann$table[1] / (CM.ann$table[1] + CM.ann$table[2]))
+
+#Calculating True Positive Rate
+TP.ann <- 1 - T2.ann
+
+#Calculating True Negative Rate
+TN.ann <- 1 - T1.ann
+
+#Constructing ROC Curve
+WAUSpredann <- ROCR::prediction(prob.ann, ann.test$RainTomorrow)
+WAUSperfann <- performance(WAUSpredann, "tpr", "fpr")
+
+#Plot ROC for All Classifiers
+{plot(WAUSperftree, col = "red")
+ abline(0, 1)
+ plot(WAUSperfbayes, add = TRUE, col = "blue")
+ plot(WAUSperfbag, add = TRUE, col = "green")
+ plot(WAUSperfboost, add = TRUE, col = "purple")
+ plot(WAUSperfrf, add = TRUE, col = "black")
+ plot(WAUSperfcvrf, add = TRUE, col = "darkorange")
+ plot(WAUSperfann, add = TRUE, col = "blueviolet")
+ legend(x = 0.65, y = 0.6, lty = 1, legend = c("Decision Tree", "Naive Bayes", "Bagging", "Boosting", "Random Forest", "CV Random Forest", "ANN"), col = c("red", "blue", "green", "purple", "black", "darkorange", "blueviolet"), text.font = 4, box.lty = 0)
+}
+```
+ROC curve for all classifiers and ANN are plotted in figure above.
+
+```{r}
+#Calculating AUC
+AUC.ann <- performance(WAUSpredann, "auc")
+AUC.ann <- round(as.numeric(AUC.ann@y.values), 4)
+
+#Constructing Summary Table for ANN
+t7 <- rbind(CM.ann$overall['Accuracy'], CM.ann$byClass['Pos Pred Value'], CM.ann$byClass['Sensitivity'], CM.ann$byClass['F1'], T1.ann, T2.ann, TP.ann, TN.ann)
+
+#Summary Table for All Classifiers
+summary.table2 <- cbind(t6[1:8, ], t7[1:8, ])
+AUC.table2 <- cbind(AUC.cvrf, AUC.ann)
+summary.table2 <- rbind(summary.table2, AUC.table2)
+summary.table2 <- round(summary.table2, 4)
+
+colnames(summary.table2) <- c("CV Random Forest", "ANN")
+rownames(summary.table2) <- c("Accuracy", "Precision", "Recall", "F1", "Type I Error", "Type II Error", "True Positive", "True Negative", "AUC")
+#Identify the Highest Value among the 6 Classifiers
+row <- seq_len(ncol(summary.table2))
+
+{
+max.acc <- which.max(summary.table2[1, ])
+summary.table2[1, ] <- summary.table2[1, ] %>% cell_spec(bold = row == max.acc)
+
+max.prec <- which.max(summary.table2[2, ])
+summary.table2[2, ] <- summary.table2[2, ] %>% cell_spec(bold = row == max.prec)
+
+max.rec <- which.max(summary.table2[3, ])
+summary.table2[3, ] <- summary.table2[3, ] %>% cell_spec(bold = row == max.rec)
+
+max.f1 <- which.max(summary.table2[4, ])
+summary.table2[4, ] <- summary.table2[4, ] %>% cell_spec(bold = row == max.f1)
+
+max.tp <- which.max(summary.table2[7, ])
+summary.table2[7, ] <- summary.table2[7, ] %>% cell_spec(bold = row == max.tp)
+
+max.tn <- which.max(summary.table2[8, ])
+summary.table2[8, ] <- summary.table2[8, ] %>% cell_spec(bold = row == max.tn)
+
+max.auc <- which.max(summary.table2[9, ])
+summary.table2[9, ] <- summary.table2[9, ] %>% cell_spec(bold = row == max.auc)
+
+#Identify the Smallest Value among the 5 Classifiers
+min.t1 <- which.min(summary.table2[5, ])
+summary.table2[5, ] <- summary.table2[5, ] %>% cell_spec(bold = row == min.t1)
+
+min.t2 <- which.min(summary.table2[6, ])
+summary.table2[6, ] <- summary.table2[6, ] %>% cell_spec(bold = row == min.t2)
+}
+
+summary.table2 %>% kable(booktabs = TRUE, escape = FALSE) %>% kable_styling("responsive")
+```
+Based on the table above, the results are mixed, but cross-validated random forest is chosen as a better model due to **higher F1 score, True Positive rate and AUC**. The reason that ANN doesn't perform as expected, probably due to the amount of data used to train the model is not large enough.
+
+## Imbalance Data
+Another possible consideration is the class imbalance of the training dataset. 
+```{r}
+prop.table(table(WAUS.train$RainTomorrow))
+```
+As shown in the table above, majority of the data is in the class 'No'. Common approach when dealing with imbalance data is to undersample the majority class and oversample the minority class, but this method is not applied in this case. This is because the imbalance training data actually reflects the reality more accurately, as raining doesn't occur as frequent as non-rainy days. In this case, methods that can deal with imbalance dataset is proposed.
+
+**Cost-Sensitive Learning** is a technique used to modify the standard classification algorithms to account for the asymmetric costs of misclassification errors. We attempt to implement cost-sensitive learning to the current best model, CV Random Forest. To apply cost-sensitive learning in random forest, one can adjust the class weights parameter in the algorithm. The class weights are used to adjust the importance of each class during the model training process. In the case of imbalanced data, where one class is more dominant than the other, assigning higher weights to the minority class will increase its importance during model training.
+
+The class weights are determined based on inverse class frequencies, where the weights of one class is the proportion of the other class. Cross validation on $mtry$ is peformed again to determine the optimal value by taking class weights into considerations.
+
+```{r}
+#Grid Search
+set.seed(100)
+trctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3, search = "grid")
+tunegrid <- expand.grid(mtry = (1:15))
+weight.cvrf.grid <- train(RainTomorrow ~ ., data = WAUS.train, method = "rf", metric = 'Accuracy', tuneGrid = tunegrid, trControl = trctrl, classwt = c('No' = 0.2, 'Yes' = 0.8))
+print(weight.cvrf.grid)
+```
+With class weight in mind, the optimal $mtry = 5$. 
+
+```{r}
+set.seed(100)
+WAUS.predwrfgrid <- predict(weight.cvrf.grid, WAUS.test) #Prediction
+
+CM.wrf <- confusionMatrix(mode = "prec_recall", data = WAUS.predwrfgrid, reference = WAUS.test$RainTomorrow) #Confusion Matrix
+print(CM.cvrf)
+```
+```{r}
+#Calculating Type I Error
+T1.wrf <- CM.wrf$table[3] / (CM.wrf$table[3] + CM.wrf$table[4])
+
+#Calculating Type II Error
+T2.wrf <- 1 - (CM.wrf$table[1] / (CM.wrf$table[1] + CM.wrf$table[2]))
+
+#Calculating True Positive Rate
+TP.wrf <- 1 - T2.wrf
+
+#Calculating True Negative Rate
+TN.wrf <- 1 - T1.wrf
+
+#Constructing ROC Curve
+WAUS.prob.wrf <- predict(weight.cvrf.grid, WAUS.test, type = "prob")
+WAUSpredwrf <- ROCR::prediction(WAUS.prob.wrf[, 2], WAUS.test$RainTomorrow)
+WAUSperfwrf <- performance(WAUSpredwrf, "tpr", "fpr")
+
+#Plot ROC for All Classifiers
+{plot(WAUSperfcvrf, col = "darkorange")
+ abline(0, 1)
+ plot(WAUSperfwrf, add = TRUE, col = 'yellow')
+ legend(x = 0.4, y = 0.3, lty = 1, legend = c("CV Random Forest", "CV Random Forest with Class Weight"), col = c("darkorange",'yellow'), text.font = 1, box.lty = 0)
+}
+
+```
+The ROC curve of CV Random Forest and CV Random Forest with Class Weight is shown above. 
+
+```{r}
+#Calculating AUC
+AUC.wrf <- performance(WAUSpredwrf, "auc")
+AUC.wrf <- round(as.numeric(AUC.wrf@y.values), 4)
+
+#Constructing Summary Table for Cross Validated Random Forest with Class Weight
+t8 <- rbind(CM.wrf$overall['Accuracy'], CM.wrf$byClass['Pos Pred Value'], CM.wrf$byClass['Sensitivity'], CM.wrf$byClass['F1'], T1.wrf, T2.wrf, TP.wrf, TN.wrf, AUC.wrf)
+t8 <- round(t8, 4)
+
+#Comparing Random Forest and CV Random Forest
+summary.table3 <- cbind(t6[1:8, ], t8[1:8, ])
+AUC.table3 <- cbind(AUC.cvrf, AUC.wrf)
+rownames(AUC.table3) <- "AUC"
+summary.table3 <- rbind(summary.table3, AUC.table3)
+summary.table3 <- round(summary.table3, 4)
+
+colnames(summary.table3) <- c("CV Random Forest", "CV Random Forest with Class Weight")
+rownames(summary.table3) <- c("Accuracy", "Precision", "Recall", "F1", "Type I Error", "Type II Error", "True Positive", "True Negative", "AUC")
+
+#Identify the Highest Value between the Two Classifiers
+row <- seq_len(ncol(summary.table3))
+
+{
+max.acc <- which.max(summary.table3[1, ])
+summary.table3[1, ] <- summary.table3[1, ] %>% cell_spec(bold = row == max.acc)
+
+max.prec <- which.max(summary.table3[2, ])
+summary.table3[2, ] <- summary.table3[2, ] %>% cell_spec(bold = row == max.prec)
+
+max.rec <- which.max(summary.table3[3, ])
+summary.table3[3, ] <- summary.table3[3, ] %>% cell_spec(bold = row == max.rec)
+
+max.f1 <- which.max(summary.table3[4, ])
+summary.table3[4, ] <- summary.table3[4, ] %>% cell_spec(bold = row == max.f1)
+
+max.tp <- which.max(summary.table3[7, ])
+summary.table3[7, ] <- summary.table3[7, ] %>% cell_spec(bold = row == max.tp)
+
+max.tn <- which.max(summary.table3[8, ])
+summary.table3[8, ] <- summary.table3[8, ] %>% cell_spec(bold = row == max.tn)
+
+max.auc <- which.max(summary.table3[9, ])
+summary.table3[9, ] <- summary.table3[9, ] %>% cell_spec(bold = row == max.auc)
+
+#Identify the Smallest Value among the 5 Classifiers
+min.t1 <- which.min(summary.table3[5, ])
+summary.table3[5, ] <- summary.table3[5, ] %>% cell_spec(bold = row == min.t1)
+
+min.t2 <- which.min(summary.table3[6, ])
+summary.table3[6, ] <- summary.table3[6, ] %>% cell_spec(bold = row == min.t2)
+}
+
+summary.table3 %>% kable(booktabs = TRUE, escape = FALSE) %>% kable_styling("responsive")
+```
+The model with class weight consideration performs worse than the model without class weight consideration, possibly indicate that the random forest model already account for class imbalance very well. Random forests have an inherent ability to handle class imbalance, and sometimes adding class weights can even reduce the performance of the model. 
+
+In this case, **Cross Validated Random Forest** model is chosen as the best model for predicting whether it will rain tomorrow.
+```{r}
+cat(paste("Accuracy: ", CM.cvrf$overall['Accuracy'], "F1: ", CM.cvrf$byClass['F1']))
+```
+In this case, the model predicts whether it will rain tomorrow with 83.83% accuracy and a F1-Score of 90.17%.
+```{r}
+rmarkdown::render()
+```
